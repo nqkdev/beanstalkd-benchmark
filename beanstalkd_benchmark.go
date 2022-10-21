@@ -20,6 +20,7 @@ import (
 	"github.com/kr/beanstalk"
 	bs "github.com/prep/beanstalk"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -69,7 +70,9 @@ func testPublisher(h string, publishers, count, size int, ch chan int) {
 
 	data := make([]byte, size)
 	count = count / publishers
+	wg := sync.WaitGroup{}
 	for p := 0; p < publishers; p++ {
+		wg.Add(1)
 		go func() {
 			for i := 0; i < count; i++ {
 				_, err := producer.Put(ctx, "default", data, bs.PutParams{
@@ -79,8 +82,10 @@ func testPublisher(h string, publishers, count, size int, ch chan int) {
 					log.Fatal(err)
 				}
 			}
+			wg.Done()
 		}()
 	}
+	wg.Wait()
 	ch <- 1
 }
 
