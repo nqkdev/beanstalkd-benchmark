@@ -68,13 +68,18 @@ func testPublisher(h string, publishers, count, size int, ch chan int) {
 	}
 
 	data := make([]byte, size)
-	for i := 0; i < count; i++ {
-		_, err := producer.Put(ctx, "default", data, bs.PutParams{
-			TTR: 120 * time.Second,
-		})
-		if err != nil {
-			log.Fatal(err)
-		}
+	count = count / publishers
+	for p := 0; p < publishers; p++ {
+		go func() {
+			for i := 0; i < count; i++ {
+				_, err := producer.Put(ctx, "default", data, bs.PutParams{
+					TTR: 120 * time.Second,
+				})
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
+		}()
 	}
 	ch <- 1
 }
