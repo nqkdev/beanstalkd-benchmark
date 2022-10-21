@@ -34,6 +34,11 @@ var drain = flag.Bool("d", false, "Drain the beanstalk before starting test")
 var fill = flag.Int("f", 0, "Place <f> jobs on the beanstalk before starting test")
 
 func testPublisher(h string, publishers, count, size int, ch chan int) {
+	if count == 0 {
+		ch <- 1
+		return
+	}
+
 	producer, err := bs.NewProducer([]string{h}, bs.Config{
 		Multiply: publishers,
 		ErrorFunc: func(err error, message string) {
@@ -75,6 +80,10 @@ func testPublisher(h string, publishers, count, size int, ch chan int) {
 }
 
 func testReader(h string, readers, count int, ch chan int) {
+	if count == 0 {
+		ch <- 1
+		return
+	}
 	consumer, err := bs.NewConsumer([]string{h}, []string{"default"}, bs.Config{
 		Multiply:       readers,
 		NumGoroutines:  readers * 10,
