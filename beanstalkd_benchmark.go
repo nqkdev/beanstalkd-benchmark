@@ -15,9 +15,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"github.com/kr/beanstalk"
+	bs "github.com/prep/beanstalk"
 	"log"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,15 +33,40 @@ var size = flag.Int("s", 256, "Size of data, default to 256. in byte")
 var drain = flag.Bool("d", false, "Drain the beanstalk before starting test")
 var fill = flag.Int("f", 0, "Place <f> jobs on the beanstalk before starting test")
 
-func testPublisher(h string, count int, size int, ch chan int) {
-	conn, e := beanstalk.Dial("tcp", h)
-	defer conn.Close()
-	data := make([]byte, size)
-	if e != nil {
-		log.Fatal(e)
+func testPublisher(h string, publishers, count, size int, ch chan int) {
+	producer, err := bs.NewProducer([]string{h}, bs.Config{
+		Multiply: publishers,
+		ErrorFunc: func(err error, message string) {
+			log.Printf("%s: %v\n", message, err.Error())
+		},
+	})
+	if err != nil {
+		log.Fatalln(err)
 	}
+	defer producer.Stop()
+
+	ctx := context.Background()
+
+	connected := make(chan string, 1)
+
+	go func() {
+		for !producer.IsConnected() {
+			time.Sleep(100 * time.Millisecond)
+		}
+		connected <- ""
+	}()
+
+	select {
+	case <-connected:
+	case <-time.After(1 * time.Second):
+		log.Fatalln("Producer is not connected")
+	}
+
+	data := make([]byte, size)
 	for i := 0; i < count; i++ {
-		_, err := conn.Put(data, 0, 0, 120*time.Second)
+		_, err := producer.Put(ctx, "default", data, bs.PutParams{
+			TTR: 120 * time.Second,
+		})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -46,23 +74,27 @@ func testPublisher(h string, count int, size int, ch chan int) {
 	ch <- 1
 }
 
-func testReader(h string, count int, ch chan int) {
-	conn, e := beanstalk.Dial("tcp", h)
-	defer conn.Close()
-	if e != nil {
-		log.Fatal(e)
+func testReader(h string, readers, count int, ch chan int) {
+	consumer, err := bs.NewConsumer([]string{h}, []string{"default"}, bs.Config{
+		Multiply:       readers,
+		NumGoroutines:  readers * 10,
+		ReserveTimeout: 250 * time.Millisecond,
+	})
+	if err != nil {
+		log.Fatalln(err)
 	}
-	for i := 0; i < count; i++ {
-		id, _, e := conn.Reserve(250 * time.Millisecond)
-		if e != nil {
-			log.Println(e)
-			continue
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var ops uint64
+	consumer.Receive(ctx, func(ctx context.Context, job *bs.Job) {
+		job.Delete(ctx)
+		atomic.AddUint64(&ops, 1)
+
+		if int(ops) == count {
+			cancel()
 		}
-		e = conn.Delete(id)
-		if e != nil {
-			log.Println(e)
-		}
-	}
+	})
 	ch <- 1
 }
 
@@ -88,7 +120,7 @@ func drainBeanstalk(h string) {
 func fillBeanstalk(h string, count int, size int) {
 	log.Println("Filling beanstalk")
 	ch := make(chan int)
-	go testPublisher(h, count, size, ch)
+	go testPublisher(h, 1, count, size, ch)
 	<-ch
 }
 
@@ -106,30 +138,22 @@ func main() {
 	log.Println("Starting readers: ", *readers)
 	log.Println("Total jobs to be processed: ", *count)
 	log.Println("Benchmarking, be patient ...")
+
 	chPublisher := make(chan int)
 	chReader := make(chan int)
 	t0 := time.Now()
 
 	if (*publishers) > 0 {
-		publishCount := *count / *publishers
-		for i := 0; i < *publishers; i++ {
-			go testPublisher(*host, publishCount, *size, chPublisher)
-		}
+		go testPublisher(*host, *publishers, *count, *size, chPublisher)
 	}
 
 	if (*readers) > 0 {
-		readCount := *count / *readers
-		for i := 0; i < *readers; i++ {
-			go testReader(*host, readCount, chReader)
-		}
+		go testReader(*host, *readers, *count, chReader)
 	}
 
 	// Wait for return, assume publishers will finish first
 	if (*publishers) > 0 {
-		for i := 0; i < *publishers; i++ {
-			<-chPublisher
-		}
-
+		<-chPublisher
 		log.Println("---------------")
 		delta := time.Now().Sub(t0)
 		log.Println("Publishers finished at: ", delta)
@@ -137,9 +161,7 @@ func main() {
 	}
 
 	if (*readers) > 0 {
-		for i := 0; i < *readers; i++ {
-			<-chReader
-		}
+		<-chReader
 		delta := time.Now().Sub(t0)
 		log.Println("Readers finished at: ", delta)
 		log.Println("Read rate: ", float64(*count)/delta.Seconds(), " req/s")
