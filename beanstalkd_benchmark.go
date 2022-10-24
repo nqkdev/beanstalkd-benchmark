@@ -69,20 +69,18 @@ func testPublisher(h string, publishers, count, size int, ch chan int) {
 	}
 
 	data := make([]byte, size)
-	count = count / publishers
 	wg := sync.WaitGroup{}
-	for p := 0; p < publishers; p++ {
-		wg.Add(1)
+	for i := 0; i < count; i++ {
+		// mimic HTTP/gRPC requests
 		go func() {
-			for i := 0; i < count; i++ {
-				_, err := producer.Put(ctx, "default", data, bs.PutParams{
-					TTR: 120 * time.Second,
-				})
-				if err != nil {
-					log.Fatal(err)
-				}
+			wg.Add(1)
+			defer wg.Done()
+			_, err := producer.Put(ctx, "default", data, bs.PutParams{
+				TTR: 120 * time.Second,
+			})
+			if err != nil {
+				log.Fatal(err)
 			}
-			wg.Done()
 		}()
 	}
 	wg.Wait()
